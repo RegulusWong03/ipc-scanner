@@ -49,10 +49,10 @@ def run_tests():
         cwd=BASE_DIR,
     )
     if result.returncode != 0:
-        print("\n❌ Tests failed! Aborting build.")
+        print("\n[X] Tests failed! Aborting build.")
         sys.exit(1)
 
-    print("\n✅ All tests passed!")
+    print("\n[OK] All tests passed!")
 
 
 def clean():
@@ -119,10 +119,10 @@ def build(use_spec=True, onefile=False):
     result = subprocess.run(cmd, cwd=BASE_DIR)
 
     if result.returncode != 0:
-        print("\n❌ Build failed!")
+        print("\n[X] Build failed!")
         sys.exit(1)
 
-    print("\n✅ Build successful!")
+    print("\n[OK] Build successful!")
 
     # 显示输出
     if system == "windows":
@@ -153,7 +153,7 @@ def package():
 
     # 读取版本号
     version = {}
-    with open(BASE_DIR / "_version.py") as f:
+    with open(BASE_DIR / "_version.py", encoding="utf-8") as f:
         exec(f.read(), version)
     ver = version.get("__version__", "1.0.0")
 
@@ -217,7 +217,7 @@ def main():
     if args.package:
         package()
 
-    print("\n🎉 Done!")
+    print("\nDone!")
 
 
 if __name__ == "__main__":

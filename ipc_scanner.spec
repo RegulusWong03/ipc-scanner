@@ -17,7 +17,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(SPEC))
 
 # 版本信息
 VERSION = {}
-with open(os.path.join(BASE_DIR, '_version.py')) as f:
+with open(os.path.join(BASE_DIR, '_version.py'), encoding='utf-8') as f:
     exec(f.read(), VERSION)
 
 block_cipher = None
