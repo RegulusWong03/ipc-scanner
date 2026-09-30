@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+release/
+.venv/
+venv/
+*.db
+*.sqlite3
+*.log
+.idea/
+.vscode/
+*.swp
+*.swo
+*.pyc
