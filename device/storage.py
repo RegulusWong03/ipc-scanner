@@ -8,6 +8,19 @@ from .models import Device, DeviceStatus, DeviceType
 
 DB_PATH = Path.home() / ".ipc-scanner" / "devices.db"
 
+# 新增列定义（用于迁移旧数据库）
+_MIGRATION_COLUMNS = [
+    ("http_port", "INTEGER DEFAULT 0"),
+    ("rtsp_port", "INTEGER DEFAULT 0"),
+    ("device_port", "INTEGER DEFAULT 0"),
+    ("tcp_port", "INTEGER DEFAULT 0"),
+    ("analog_channels", "INTEGER DEFAULT 0"),
+    ("factory_default", "INTEGER DEFAULT 0"),
+    ("activated", "INTEGER DEFAULT 1"),
+    ("device_name", "TEXT DEFAULT ''"),
+    ("mac_vendor", "TEXT DEFAULT ''"),
+]
+
 
 def init_db():
     """初始化数据库表"""
@@ -32,11 +45,34 @@ def init_db():
             device_group TEXT,
             note TEXT,
             first_seen TEXT,
-            last_seen TEXT
+            last_seen TEXT,
+            http_port INTEGER DEFAULT 0,
+            rtsp_port INTEGER DEFAULT 0,
+            device_port INTEGER DEFAULT 0,
+            tcp_port INTEGER DEFAULT 0,
+            analog_channels INTEGER DEFAULT 0,
+            factory_default INTEGER DEFAULT 0,
+            activated INTEGER DEFAULT 1,
+            device_name TEXT DEFAULT '',
+            mac_vendor TEXT DEFAULT ''
         )
     """)
     conn.commit()
+    # 迁移：为旧数据库添加缺失的列
+    _migrate(conn)
     conn.close()
+
+
+def _migrate(conn: sqlite3.Connection):
+    """为已有的数据库表补充缺失的列"""
+    cursor = conn.execute("PRAGMA table_info(devices)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    for col_name, col_type in _MIGRATION_COLUMNS:
+        if col_name not in existing_cols:
+            conn.execute(
+                f"ALTER TABLE devices ADD COLUMN {col_name} {col_type}"
+            )
+    conn.commit()
 
 
 def save_device(device: Device):
@@ -45,8 +81,12 @@ def save_device(device: Device):
     conn.execute("""
         INSERT INTO devices (mac, ip, subnet_mask, gateway, port, device_type,
             brand, model, firmware_version, serial_number, channels, uptime,
-            dhcp, rtsp_url, device_group, note, first_seen, last_seen)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            dhcp, rtsp_url, device_group, note, first_seen, last_seen,
+            http_port, rtsp_port, device_port, tcp_port,
+            analog_channels, factory_default, activated,
+            device_name, mac_vendor)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(mac) DO UPDATE SET
             ip=excluded.ip, subnet_mask=excluded.subnet_mask,
             gateway=excluded.gateway, port=excluded.port,
@@ -54,7 +94,14 @@ def save_device(device: Device):
             model=excluded.model, firmware_version=excluded.firmware_version,
             serial_number=excluded.serial_number, channels=excluded.channels,
             uptime=excluded.uptime, dhcp=excluded.dhcp,
-            rtsp_url=excluded.rtsp_url, last_seen=excluded.last_seen
+            rtsp_url=excluded.rtsp_url, last_seen=excluded.last_seen,
+            http_port=excluded.http_port, rtsp_port=excluded.rtsp_port,
+            device_port=excluded.device_port, tcp_port=excluded.tcp_port,
+            analog_channels=excluded.analog_channels,
+            factory_default=excluded.factory_default,
+            activated=excluded.activated,
+            device_name=excluded.device_name,
+            mac_vendor=excluded.mac_vendor
     """, (
         device.mac, device.ip, device.subnet_mask, device.gateway,
         device.port, device.device_type.value, device.brand, device.model,
@@ -62,6 +109,10 @@ def save_device(device: Device):
         device.uptime, int(device.dhcp), device.rtsp_url,
         device.group, device.note,
         device.first_seen.isoformat(), device.last_seen.isoformat(),
+        device.http_port, device.rtsp_port, device.device_port,
+        device.tcp_port, device.analog_channels,
+        int(device.factory_default), int(device.activated),
+        device.device_name, device.mac_vendor,
     ))
     conn.commit()
     conn.close()
@@ -86,6 +137,15 @@ def load_devices() -> list[Device]:
             group=row[14] or "", note=row[15] or "",
             first_seen=datetime.fromisoformat(row[16]),
             last_seen=datetime.fromisoformat(row[17]),
+            http_port=_int_or(row, 18),
+            rtsp_port=_int_or(row, 19),
+            device_port=_int_or(row, 20),
+            tcp_port=_int_or(row, 21),
+            analog_channels=_int_or(row, 22),
+            factory_default=_bool_or(row, 23),
+            activated=_bool_or(row, 24, default=True),
+            device_name=_str_or(row, 25),
+            mac_vendor=_str_or(row, 26),
         )
         device.status = DeviceStatus.OFFLINE
         devices.append(device)
@@ -106,3 +166,27 @@ def update_device_group(mac: str, group: str):
     conn.execute("UPDATE devices SET device_group=? WHERE mac=?", (group, mac))
     conn.commit()
     conn.close()
+
+
+def _int_or(row: tuple, idx: int, default: int = 0) -> int:
+    """安全地从行中读取整数值"""
+    if idx < len(row) and row[idx] is not None:
+        try:
+            return int(row[idx])
+        except (ValueError, TypeError):
+            pass
+    return default
+
+
+def _bool_or(row: tuple, idx: int, default: bool = False) -> bool:
+    """安全地从行中读取布尔值"""
+    if idx < len(row) and row[idx] is not None:
+        return bool(row[idx])
+    return default
+
+
+def _str_or(row: tuple, idx: int, default: str = "") -> str:
+    """安全地从行中读取字符串值"""
+    if idx < len(row) and row[idx] is not None:
+        return str(row[idx])
+    return default

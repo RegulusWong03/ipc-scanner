@@ -42,13 +42,13 @@ jobs:
           QT_QPA_PLATFORM: offscreen
 
       - name: Build executable
-        run: python build.py --package
+        run: python build.py --onefile --package
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: IPCScanner-windows
-          path: release/*.zip
+          path: release/*.exe
 
   build-linux:
     name: Build Linux
@@ -79,13 +79,13 @@ jobs:
           QT_QPA_PLATFORM: offscreen
 
       - name: Build executable
-        run: python build.py --package
+        run: python build.py --onefile --package
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: IPCScanner-linux
-          path: release/*.tar.gz
+          path: release/IPCScanner-*-linux-*
 
   release:
     name: Create Release
@@ -112,8 +112,10 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
+            artifacts/**/*.exe
             artifacts/**/*.zip
             artifacts/**/*.tar.gz
+            artifacts/**/IPCScanner-*
           name: IPC Scanner v${{ steps.version.outputs.VERSION }}
           draft: false
           prerelease: false

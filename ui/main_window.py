@@ -5,9 +5,10 @@ import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QToolBar, QTabWidget, QFileDialog, QMessageBox,
+    QFrame, QLabel,
 )
-from PyQt6.QtGui import QAction
-from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction, QFont
+from PyQt6.QtCore import Qt, QTimer
 
 from ui.scan_panel import ScanPanel
 from ui.device_table import DeviceTable
@@ -30,12 +31,20 @@ logger = logging.getLogger(__name__)
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("IPC/NVR 扫描管理工具")
-        self.setMinimumSize(1200, 800)
+        self.setWindowTitle("IPC Scanner")
+        self.setMinimumSize(1400, 900)
 
         # 后端状态
         self._devices: list[Device] = []
         self._discovery_thread: DeviceDiscoveryThread | None = None
+        self._pending_updates: list[dict] = []
+        self._scan_found_macs: set[str] = set()
+
+        # 批量更新定时器
+        self._batch_timer = QTimer(self)
+        self._batch_timer.setSingleShot(True)
+        self._batch_timer.setInterval(500)
+        self._batch_timer.timeout.connect(self._flush_pending_updates)
 
         # 初始化数据库
         init_db()
@@ -49,54 +58,94 @@ class MainWindow(QMainWindow):
         # 用历史数据刷新界面
         self.device_table.update_devices(self._devices)
         self._rebuild_group_tree()
+        self._update_stats()
 
         log_operation("启动", detail="应用程序启动")
 
     def _init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(4, 4, 4, 4)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # 工具栏
+        # === 顶部标题栏 + 统计 ===
+        header = QFrame()
+        header.setObjectName("header")
+        header.setStyleSheet("""
+            QFrame#header {
+                background-color: #181825;
+                border-bottom: 2px solid #313244;
+                padding: 12px 20px;
+            }
+        """)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(20, 12, 20, 12)
+
+        # 标题
+        title = QLabel("IPC Scanner")
+        title.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        title.setStyleSheet("color: #89b4fa;")
+        header_layout.addWidget(title)
+
+        header_layout.addStretch()
+
+        # 统计卡片
+        self.stat_total = self._create_stat_card("0", "设备总数", "#89b4fa")
+        self.stat_online = self._create_stat_card("0", "在线", "#a6e3a1")
+        self.stat_offline = self._create_stat_card("0", "离线", "#6c7086")
+        self.stat_new = self._create_stat_card("0", "新上线", "#f9e2af")
+
+        header_layout.addWidget(self.stat_total[0])
+        header_layout.addWidget(self.stat_online[0])
+        header_layout.addWidget(self.stat_offline[0])
+        header_layout.addWidget(self.stat_new[0])
+
+        main_layout.addWidget(header)
+
+        # === 工具栏 ===
         toolbar = QToolBar("主工具栏")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
-        self.scan_action = QAction("扫描设备", self)
+        self.scan_action = QAction("  扫描设备", self)
         toolbar.addAction(self.scan_action)
         toolbar.addSeparator()
 
-        # 导入/导出相关
-        self.import_action = QAction("导入", self)
+        self.import_action = QAction("  导入", self)
         self.import_action.triggered.connect(self._import_devices)
         toolbar.addAction(self.import_action)
 
-        self.export_action = QAction("导出全部", self)
+        self.export_action = QAction("  导出全部", self)
         self.export_action.triggered.connect(self._export_devices)
         toolbar.addAction(self.export_action)
 
-        self.export_selected_action = QAction("导出选中", self)
+        self.export_selected_action = QAction("  导出选中", self)
         self.export_selected_action.triggered.connect(self._export_selected_devices)
         toolbar.addAction(self.export_selected_action)
 
-        self.template_action = QAction("下载模板", self)
+        self.template_action = QAction("  下载模板", self)
         self.template_action.triggered.connect(self._download_template)
         toolbar.addAction(self.template_action)
 
-        # 主体布局：扫描面板在上，Tab 在下
-        self.scan_panel = ScanPanel()
-        layout.addWidget(self.scan_panel)
+        # === 扫描面板 ===
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(16, 12, 16, 12)
+        content_layout.setSpacing(8)
 
-        # Tab 布局
+        self.scan_panel = ScanPanel()
+        content_layout.addWidget(self.scan_panel)
+
+        # === Tab 布局 ===
         self.tabs = QTabWidget()
-        layout.addWidget(self.tabs, stretch=1)
+        content_layout.addWidget(self.tabs, stretch=1)
 
         # 设备列表页
         self.device_table = DeviceTable()
         self.tabs.addTab(self.device_table, "设备列表")
 
-        # 网络配置页（单设备）
+        # 网络配置页
         self.config_panel = ConfigPanel()
         self.tabs.addTab(self.config_panel, "网络配置")
 
@@ -112,40 +161,78 @@ class MainWindow(QMainWindow):
         self.log_panel = LogPanel()
         self.tabs.addTab(self.log_panel, "操作日志")
 
+        main_layout.addWidget(content)
+
         # 状态栏
         self.statusBar().showMessage(f"已加载 {len(self._devices)} 台历史设备")
 
         # === 信号连接 ===
-
-        # 扫描
         self.scan_panel.scan_requested.connect(self._on_scan_requested)
         self.scan_action.triggered.connect(self.scan_panel.start_scan)
         self.scan_panel.stop_requested.connect(self._on_stop_scan)
 
-        # 设备选中 -> 配置面板 + 预览面板
         self.device_table.device_selected.connect(self._on_device_selected)
-
-        # 设备列表变更（备注/分组编辑）
         self.device_table.devices_changed.connect(self._on_devices_changed)
 
-        # 配置面板
         self.config_panel.config_applied.connect(self._on_config_applied)
         self.config_panel.password_changed.connect(self._on_password_changed)
 
-        # 批量操作完成
         self.batch_panel.batch_completed.connect(self._on_batch_completed)
 
-        # Tab 切换时刷新日志
         self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _create_stat_card(self, value: str, label: str, color: str):
+        """创建统计卡片"""
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: #1e1e2e;
+                border: 1px solid #313244;
+                border-radius: 8px;
+                padding: 8px 16px;
+                margin: 0 4px;
+            }}
+        """)
+        card.setFixedHeight(56)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 4, 12, 4)
+        layout.setSpacing(0)
+
+        val_label = QLabel(value)
+        val_label.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        val_label.setStyleSheet(f"color: {color}; border: none;")
+        val_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        desc_label = QLabel(label)
+        desc_label.setStyleSheet("color: #6c7086; font-size: 11px; border: none;")
+        desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout.addWidget(val_label)
+        layout.addWidget(desc_label)
+
+        return (card, val_label, desc_label)
+
+    def _update_stats(self):
+        """更新顶部统计卡片"""
+        total = len(self._devices)
+        online = sum(1 for d in self._devices if d.status == DeviceStatus.ONLINE)
+        offline = sum(1 for d in self._devices if d.status == DeviceStatus.OFFLINE)
+        new = sum(1 for d in self._devices if d.status == DeviceStatus.NEW)
+
+        self.stat_total[1].setText(str(total))
+        self.stat_online[1].setText(str(online))
+        self.stat_offline[1].setText(str(offline))
+        self.stat_new[1].setText(str(new))
 
     # === 扫描流程 ===
 
     def _on_scan_requested(self, ip_list: list[str], iface_ip: str | None):
-        """启动扫描线程"""
         if self._discovery_thread and self._discovery_thread.isRunning():
             return
 
         self.statusBar().showMessage(f"正在扫描 {len(ip_list)} 个地址...")
+        self._scan_found_macs = set()
 
         for d in self._devices:
             d.status = DeviceStatus.OFFLINE
@@ -171,6 +258,8 @@ class MainWindow(QMainWindow):
         if not mac:
             return
 
+        self._scan_found_macs.add(mac)
+
         existing = next((d for d in self._devices if d.mac == mac), None)
 
         if existing:
@@ -181,23 +270,56 @@ class MainWindow(QMainWindow):
                 existing.gateway = info.get("gateway", existing.gateway)
                 log_operation("IP变更", device_mac=mac, device_ip=existing.ip,
                               detail=f"{old_ip} -> {existing.ip}")
-            existing.status = DeviceStatus.ONLINE
+            if existing.status in (DeviceStatus.ONLINE, DeviceStatus.NEW):
+                existing.status = DeviceStatus.ONLINE
+            else:
+                existing.status = DeviceStatus.ONLINE
             existing.firmware_version = info.get("firmware", existing.firmware_version)
             existing.model = info.get("model", existing.model)
             existing.brand = info.get("brand", existing.brand)
+            existing.uptime = info.get("uptime", existing.uptime)
+            existing.serial_number = info.get("serial", existing.serial_number)
+            existing.channels = info.get("digital_channels", info.get("channels", existing.channels))
+            existing.dhcp = info.get("dhcp", existing.dhcp)
+            existing.http_port = info.get("http_port", existing.http_port)
+            existing.rtsp_port = info.get("rtsp_port", existing.rtsp_port)
+            existing.device_port = info.get("device_port", existing.device_port)
+            existing.tcp_port = info.get("tcp_port", existing.tcp_port)
+            existing.analog_channels = info.get("analog_channels", existing.analog_channels)
+            existing.factory_default = info.get("factory_default", existing.factory_default)
+            existing.activated = info.get("activated", existing.activated)
+            existing.device_name = info.get("device_name", existing.device_name)
+            existing.mac_vendor = info.get("mac_vendor", existing.mac_vendor)
         else:
             device = self._build_device_from_info(info)
             device.status = DeviceStatus.NEW
+            device.uptime = info.get("uptime", "")
             self._devices.append(device)
             log_operation("扫描", device_mac=mac, device_ip=device.ip,
                           detail=f"发现新设备 {device.brand} {device.model}")
 
+        self._pending_updates.append(info)
+        self._batch_timer.start()
+
+    def _flush_pending_updates(self):
+        if not self._pending_updates:
+            return
+        self._pending_updates.clear()
         self._save_and_refresh()
 
     def _on_scan_finished(self, result: list):
-        self.scan_panel.scan_done()
+        self._batch_timer.stop()
+        self._flush_pending_updates()
+
+        for d in self._devices:
+            if d.mac not in self._scan_found_macs:
+                d.status = DeviceStatus.OFFLINE
+
         self._save_and_refresh()
         self._rebuild_group_tree()
+        self._update_stats()
+
+        self.scan_panel.scan_done()
 
         online_count = sum(1 for d in self._devices if d.status == DeviceStatus.ONLINE)
         new_count = sum(1 for d in self._devices if d.status == DeviceStatus.NEW)
@@ -240,6 +362,15 @@ class MainWindow(QMainWindow):
             channels=channels,
             status=DeviceStatus.ONLINE,
             dhcp=info.get("dhcp", False),
+            http_port=info.get("http_port", 0),
+            rtsp_port=info.get("rtsp_port", 0),
+            device_port=info.get("device_port", 0),
+            tcp_port=info.get("tcp_port", 0),
+            analog_channels=info.get("analog_channels", 0),
+            factory_default=info.get("factory_default", False),
+            activated=info.get("activated", True),
+            device_name=info.get("device_name", ""),
+            mac_vendor=info.get("mac_vendor", ""),
             first_seen=datetime.now(),
             last_seen=datetime.now(),
         )
@@ -277,35 +408,30 @@ class MainWindow(QMainWindow):
                           detail=result.get("message", ""), result="failed")
 
     def _on_batch_completed(self, result: dict):
-        """批量操作完成回调"""
         s = result.get("success", 0)
         f = result.get("failed", 0)
         skip = result.get("skipped", 0)
         self._save_and_refresh()
+        self._update_stats()
         self.statusBar().showMessage(f"批量操作完成: 成功 {s}, 跳过 {skip}, 失败 {f}")
         log_operation("批量操作", detail=f"成功 {s}, 跳过 {skip}, 失败 {f}")
 
     # === 导入/导出 ===
 
     def _export_devices(self):
-        """导出全部设备"""
         if not self._devices:
             QMessageBox.information(self, "提示", "设备列表为空，无数据可导出")
             return
-
         self._do_export(self._devices, "导出全部设备")
 
     def _export_selected_devices(self):
-        """导出选中的设备"""
         selected = self.device_table.get_selected_devices()
         if not selected:
             QMessageBox.information(self, "提示", "请先在设备列表中选择要导出的设备")
             return
-
         self._do_export(selected, f"导出选中的 {len(selected)} 台设备")
 
     def _do_export(self, devices: list[Device], title: str):
-        """执行导出操作"""
         path, _ = QFileDialog.getSaveFileName(
             self, title, "",
             "Excel 文件 (*.xlsx);;CSV 文件 (*.csv)"
@@ -324,7 +450,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "导出失败", str(e))
 
     def _import_devices(self):
-        """导入设备清单（带预览和校验）"""
         path, _ = QFileDialog.getOpenFileName(
             self, "导入设备清单", "",
             "Excel 文件 (*.xlsx);;CSV 文件 (*.csv)"
@@ -333,7 +458,6 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            # 读取文件
             if path.endswith(".xlsx"):
                 rows = import_excel(path)
             else:
@@ -343,21 +467,18 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "提示", "文件中没有可导入的数据")
                 return
 
-            # 显示导入预览对话框
             existing_macs = {d.mac.lower() for d in self._devices}
             dialog = ImportDialog(rows, existing_macs, parent=self)
 
             if dialog.exec() != ImportDialog.DialogCode.Accepted:
                 return
 
-            # 获取用户选择
             valid_rows, strategy = dialog.get_result()
-
-            # 执行导入
             count = self._process_import(valid_rows, strategy)
 
             self._save_and_refresh()
             self._rebuild_group_tree()
+            self._update_stats()
             self.statusBar().showMessage(f"导入成功: {count} 台设备")
             log_operation("导入", detail=f"从 {path} 导入 {count} 台设备 (策略: {strategy})")
 
@@ -365,15 +486,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "导入失败", str(e))
 
     def _process_import(self, valid_rows: list[dict], strategy: str) -> int:
-        """处理导入数据
-
-        Args:
-            valid_rows: 校验通过的数据行
-            strategy: 冲突处理策略 (skip/overwrite/add_all)
-
-        Returns:
-            实际导入的设备数量
-        """
         count = 0
         existing_macs = {d.mac.lower(): d for d in self._devices}
 
@@ -386,10 +498,8 @@ class MainWindow(QMainWindow):
 
             if existing:
                 if strategy == ImportDialog.SKIP_EXISTING:
-                    # 跳过已存在的设备
                     continue
                 elif strategy == ImportDialog.OVERWRITE:
-                    # 覆盖更新
                     existing.ip = row.get("ip", "") or existing.ip
                     existing.brand = row.get("brand", "") or existing.brand
                     existing.model = row.get("model", "") or existing.model
@@ -399,11 +509,9 @@ class MainWindow(QMainWindow):
                     existing.gateway = row.get("gateway", "") or existing.gateway
                     count += 1
                 elif strategy == ImportDialog.ADD_ALL:
-                    # 全部作为新设备（不应该发生，MAC 重复会覆盖）
                     existing.ip = row.get("ip", "") or existing.ip
                     count += 1
             else:
-                # 新设备
                 device = Device(
                     mac=mac,
                     ip=row.get("ip", ""),
@@ -421,7 +529,6 @@ class MainWindow(QMainWindow):
         return count
 
     def _download_template(self):
-        """下载导入模板"""
         path, _ = QFileDialog.getSaveFileName(
             self, "下载导入模板", "设备清单模板.xlsx",
             "Excel 文件 (*.xlsx)"
@@ -445,6 +552,7 @@ class MainWindow(QMainWindow):
         for d in self._devices:
             save_device(d)
         self.device_table.update_devices(self._devices)
+        self._update_stats()
 
     def _rebuild_group_tree(self):
         self.device_table.rebuild_group_tree(self._devices)

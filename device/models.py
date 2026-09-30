@@ -35,6 +35,18 @@ class Device:
     status: DeviceStatus = DeviceStatus.OFFLINE
     dhcp: bool = False
     rtsp_url: str = ""
+    # 端口信息
+    http_port: int = 0
+    rtsp_port: int = 0
+    device_port: int = 0
+    tcp_port: int = 0
+    # 通道与状态
+    analog_channels: int = 0
+    factory_default: bool = False
+    activated: bool = True
+    # 扩展信息
+    device_name: str = ""             # 自定义名称 / OSD 名称
+    mac_vendor: str = ""              # OUI 厂商
     # 用户自定义
     group: str = ""                   # 分组（楼层/区域）
     note: str = ""                    # 备注名

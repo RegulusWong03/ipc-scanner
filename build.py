@@ -90,8 +90,8 @@ def build(use_spec=True, onefile=False):
         print("Installing PyInstaller...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
 
-    if use_spec and SPEC_FILE.exists():
-        # 使用 spec 文件
+    if use_spec and SPEC_FILE.exists() and not onefile:
+        # 使用 spec 文件（目录模式）
         cmd = [sys.executable, "-m", "PyInstaller", str(SPEC_FILE)]
     elif onefile:
         # 单文件模式
@@ -101,10 +101,18 @@ def build(use_spec=True, onefile=False):
             "--windowed",
             "--name", "IPCScanner",
             "--add-data", f"{BASE_DIR / '_version.py'}{os.pathsep}.",
+            "--hidden-import", "PyQt6.QtSvg",
+            "--hidden-import", "PyQt6.QtNetwork",
+            "--hidden-import", "PyQt6.QtWidgets",
+            "--hidden-import", "PyQt6.QtCore",
+            "--hidden-import", "PyQt6.QtGui",
         ]
         # Windows 额外参数
         if system == "windows":
-            cmd.extend(["--icon", str(BASE_DIR / "assets" / "icon.ico")])
+            cmd.extend([
+                "--icon", str(BASE_DIR / "assets" / "icon.ico"),
+                "--version-file", str(BASE_DIR / "version_info.txt"),
+            ])
     else:
         # 目录模式（默认）
         cmd = [
@@ -125,25 +133,37 @@ def build(use_spec=True, onefile=False):
     print("\n[OK] Build successful!")
 
     # 显示输出
-    if system == "windows":
-        exe_path = DIST_DIR / "IPCScanner" / "IPCScanner.exe"
-    else:
-        exe_path = DIST_DIR / "IPCScanner" / "IPCScanner"
-
-    if exe_path.exists():
-        size_mb = exe_path.stat().st_size / (1024 * 1024)
-        print(f"  Output: {exe_path}")
-        print(f"  Size: {size_mb:.1f} MB")
+    if onefile:
+        # 单文件模式
+        if system == "windows":
+            exe_path = DIST_DIR / "IPCScanner.exe"
+        else:
+            exe_path = DIST_DIR / "IPCScanner"
+        
+        if exe_path.exists():
+            size_mb = exe_path.stat().st_size / (1024 * 1024)
+            print(f"  Output: {exe_path}")
+            print(f"  Size: {size_mb:.1f} MB")
     else:
         # 目录模式
-        app_dir = DIST_DIR / "IPCScanner"
-        if app_dir.exists():
-            total_size = sum(f.stat().st_size for f in app_dir.rglob("*") if f.is_file())
-            print(f"  Output directory: {app_dir}")
-            print(f"  Total size: {total_size / (1024 * 1024):.1f} MB")
+        if system == "windows":
+            exe_path = DIST_DIR / "IPCScanner" / "IPCScanner.exe"
+        else:
+            exe_path = DIST_DIR / "IPCScanner" / "IPCScanner"
+
+        if exe_path.exists():
+            size_mb = exe_path.stat().st_size / (1024 * 1024)
+            print(f"  Output: {exe_path}")
+            print(f"  Size: {size_mb:.1f} MB")
+        else:
+            app_dir = DIST_DIR / "IPCScanner"
+            if app_dir.exists():
+                total_size = sum(f.stat().st_size for f in app_dir.rglob("*") if f.is_file())
+                print(f"  Output directory: {app_dir}")
+                print(f"  Total size: {total_size / (1024 * 1024):.1f} MB")
 
 
-def package():
+def package(onefile=False):
     """创建发布包"""
     system, arch = get_platform_info()
 
@@ -160,8 +180,28 @@ def package():
     release_dir = BASE_DIR / "release"
     release_dir.mkdir(exist_ok=True)
 
-    if system == "windows":
-        # Windows: 创建 zip
+    if onefile:
+        # 单文件模式：直接复制 exe/可执行文件
+        if system == "windows":
+            exe_src = DIST_DIR / "IPCScanner.exe"
+            exe_dst = release_dir / f"IPCScanner-{ver}-win-{arch}.exe"
+        else:
+            exe_src = DIST_DIR / "IPCScanner"
+            exe_dst = release_dir / f"IPCScanner-{ver}-linux-{arch}"
+
+        if exe_src.exists():
+            shutil.copy2(exe_src, exe_dst)
+            # Linux 添加执行权限
+            if system == "linux":
+                exe_dst.chmod(0o755)
+            print(f"  Package: {exe_dst}")
+            print(f"  Size: {exe_dst.stat().st_size / (1024 * 1024):.1f} MB")
+        else:
+            print(f"  [X] Executable not found: {exe_src}")
+            sys.exit(1)
+
+    elif system == "windows":
+        # Windows 目录模式: 创建 zip
         import zipfile
         zip_name = f"IPCScanner-{ver}-win-{arch}.zip"
         zip_path = release_dir / zip_name
@@ -177,7 +217,7 @@ def package():
         print(f"  Size: {zip_path.stat().st_size / (1024 * 1024):.1f} MB")
 
     elif system == "linux":
-        # Linux: 创建 tar.gz
+        # Linux 目录模式: 创建 tar.gz
         import tarfile
         tar_name = f"IPCScanner-{ver}-linux-{arch}.tar.gz"
         tar_path = release_dir / tar_name
@@ -215,7 +255,7 @@ def main():
         build(use_spec=SPEC_FILE.exists(), onefile=args.onefile)
 
     if args.package:
-        package()
+        package(onefile=args.onefile)
 
     print("\nDone!")
 

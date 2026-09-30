@@ -15,9 +15,33 @@ from device.storage import update_device_note, update_device_group
 
 
 COLUMNS = [
-    "状态", "IP", "MAC", "品牌", "型号", "设备类型",
-    "固件版本", "通道数", "运行时间", "分组", "备注",
+    "序号", "IP", "MAC", "品牌", "型号", "序列号", "设备类型",
+    "固件版本", "通道数", "运行时间", "HTTP端口", "RTSP端口",
+    "设备端口", "子网掩码", "网关", "DHCP", "激活状态",
+    "状态", "分组", "备注",
 ]
+
+# 列索引常量
+COL_SEQ = 0
+COL_IP = 1
+COL_MAC = 2
+COL_BRAND = 3
+COL_MODEL = 4
+COL_SERIAL = 5
+COL_DEVICE_TYPE = 6
+COL_FIRMWARE = 7
+COL_CHANNELS = 8
+COL_UPTIME = 9
+COL_HTTP_PORT = 10
+COL_RTSP_PORT = 11
+COL_DEVICE_PORT = 12
+COL_SUBNET = 13
+COL_GATEWAY = 14
+COL_DHCP = 15
+COL_ACTIVATED = 16
+COL_STATUS = 17
+COL_GROUP = 18
+COL_NOTE = 19
 
 # 状态颜色映射
 STATUS_COLORS = {
@@ -25,6 +49,14 @@ STATUS_COLORS = {
     DeviceStatus.OFFLINE: QColor("#9e9e9e"),
     DeviceStatus.NEW: QColor("#2196f3"),
 }
+
+# 品牌彩色指示器（用彩色文字前缀代替图标）
+BRAND_INDICATORS = {
+    "hikvision": ("●", "#e53935"),   # 红色
+    "dahua": ("●", "#1e88e5"),       # 蓝色
+    "uniview": ("●", "#43a047"),     # 绿色
+}
+BRAND_DEFAULT_INDICATOR = ("●", "#9e9e9e")  # 灰色
 
 
 class DeviceTable(QWidget):
@@ -76,7 +108,12 @@ class DeviceTable(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        # IP 和 MAC 列自适应内容宽度
+        self.table.horizontalHeader().setSectionResizeMode(COL_IP, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(COL_MAC, QHeaderView.ResizeMode.ResizeToContents)
+        # 最后一列（备注）填充剩余空间
+        self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)  # 支持多选
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -147,6 +184,7 @@ class DeviceTable(QWidget):
         searchable = " ".join([
             d.ip, d.mac, d.brand, d.model,
             d.firmware_version, d.serial_number,
+            d.device_name, d.mac_vendor,
             d.group, d.note,
         ]).lower()
         return keyword in searchable
@@ -157,29 +195,61 @@ class DeviceTable(QWidget):
         self.table.setRowCount(len(devices))
 
         for i, d in enumerate(devices):
-            items = [
-                d.status.value,
-                d.ip,
-                d.mac,
-                d.brand,
-                d.model,
-                d.device_type.value,
-                d.firmware_version,
-                str(d.channels),
-                d.uptime,
-                d.group,
-                d.note,
-            ]
-            for col, text in enumerate(items):
-                item = QTableWidgetItem(text)
-                # 状态列着色
-                if col == 0:
-                    color = STATUS_COLORS.get(d.status)
-                    if color:
-                        item.setForeground(color)
-                self.table.setItem(i, col, item)
+            self._update_device_row(i, d)
 
         self.count_label.setText(f"{len(devices)} 台设备")
+
+    def _add_device_row(self, row: int, d: Device):
+        """为新增设备添加一行（与 _update_device_row 等价，方便调用方区分语义）"""
+        self._update_device_row(row, d)
+
+    def _update_device_row(self, row: int, d: Device):
+        """填充或更新指定行的所有列"""
+        # 品牌指示器
+        brand_key = (d.brand or "").lower()
+        indicator, indicator_color = BRAND_INDICATORS.get(brand_key, BRAND_DEFAULT_INDICATOR)
+        brand_text = f"{indicator} {d.brand}" if d.brand else indicator
+
+        items = [
+            str(row + 1),                             # 序号
+            d.ip,
+            d.mac,
+            brand_text,                                # 品牌（含彩色指示器）
+            d.model,
+            d.serial_number,
+            d.device_type.value,
+            d.firmware_version,
+            str(d.channels),
+            d.uptime,
+            str(d.http_port) if d.http_port else "",
+            str(d.rtsp_port) if d.rtsp_port else "",
+            str(d.device_port) if d.device_port else "",
+            d.subnet_mask,
+            d.gateway,
+            "是" if d.dhcp else "否",
+            "已激活" if d.activated else "未激活",
+            d.status.value,
+            d.group,
+            d.note,
+        ]
+
+        for col, text in enumerate(items):
+            item = QTableWidgetItem(text)
+            # 品牌列：设置指示器颜色
+            if col == COL_BRAND:
+                item.setForeground(QColor(indicator_color))
+            # 状态列着色
+            elif col == COL_STATUS:
+                color = STATUS_COLORS.get(d.status)
+                if color:
+                    item.setForeground(color)
+            # DHCP 列着色
+            elif col == COL_DHCP:
+                item.setForeground(QColor("#4caf50") if d.dhcp else QColor("#9e9e9e"))
+            # 激活状态列着色
+            elif col == COL_ACTIVATED:
+                item.setForeground(QColor("#4caf50") if d.activated else QColor("#ff9800"))
+            self.table.setItem(row, col, item)
 
     def _on_search_changed(self, _text: str):
         self._apply_filter()

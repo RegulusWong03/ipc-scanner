@@ -11,9 +11,10 @@ from device.models import Device, DeviceType, DeviceStatus
 
 # 导出字段定义
 EXPORT_FIELDS = [
-    "IP", "MAC", "设备类型", "品牌", "型号", "固件版本",
-    "序列号", "通道数", "子网掩码", "网关", "DHCP",
-    "运行时间", "分组", "备注",
+    "IP", "MAC", "设备类型", "品牌", "型号", "序列号", "固件版本",
+    "通道数", "HTTP端口", "RTSP端口", "设备端口",
+    "子网掩码", "网关", "DHCP", "激活状态",
+    "运行时间", "设备名称", "分组", "备注",
 ]
 
 # 导入必填字段
@@ -37,9 +38,11 @@ def export_excel(devices: list[Device], filepath: str, styled: bool = True):
     for d in devices:
         ws.append([
             d.ip, d.mac, d.device_type.value, d.brand, d.model,
-            d.firmware_version, d.serial_number, d.channels,
+            d.serial_number, d.firmware_version, d.channels,
+            d.http_port or "", d.rtsp_port or "", d.device_port or "",
             d.subnet_mask, d.gateway, "是" if d.dhcp else "否",
-            d.uptime, d.group, d.note,
+            "已激活" if d.activated else "未激活",
+            d.uptime, d.device_name, d.group, d.note,
         ])
 
     if styled:
@@ -56,9 +59,11 @@ def export_csv(devices: list[Device], filepath: str):
         for d in devices:
             writer.writerow([
                 d.ip, d.mac, d.device_type.value, d.brand, d.model,
-                d.firmware_version, d.serial_number, d.channels,
+                d.serial_number, d.firmware_version, d.channels,
+                d.http_port or "", d.rtsp_port or "", d.device_port or "",
                 d.subnet_mask, d.gateway, "是" if d.dhcp else "否",
-                d.uptime, d.group, d.note,
+                "已激活" if d.activated else "未激活",
+                d.uptime, d.device_name, d.group, d.note,
             ])
 
 
@@ -75,8 +80,9 @@ def generate_template(filepath: str):
     # 示例行（带注释）
     ws.append([
         "192.168.1.100", "aa:bb:cc:dd:ee:ff", "IPC", "hikvision",
-        "DS-2CD2142FWD", "", "", 1, "255.255.255.0", "192.168.1.1",
-        "否", "", "1F-大厅", "前台摄像头"
+        "DS-2CD2142FWD", "", "", 1, 80, 554, 8000,
+        "255.255.255.0", "192.168.1.1", "否", "已激活",
+        "", "", "1F-大厅", "前台摄像头"
     ])
 
     # 说明注释
@@ -185,15 +191,15 @@ def _parse_import_row(row) -> dict:
         "device_type": _get(2, "未知"),
         "brand": _get(3),
         "model": _get(4),
-        "firmware_version": _get(5),
-        "serial_number": _get(6),
+        "serial_number": _get(5),
+        "firmware_version": _get(6),
         "channels": channels,
-        "subnet_mask": _get(8),
-        "gateway": _get(9),
-        "dhcp": _get(10) == "是" if len(row) > 10 else False,
-        "uptime": _get(11),
-        "group": _get(12),
-        "note": _get(13),
+        "subnet_mask": _get(11),
+        "gateway": _get(12),
+        "dhcp": _get(13) == "是" if len(row) > 13 else False,
+        "uptime": _get(15),
+        "group": _get(17),
+        "note": _get(18),
     }
 
 
@@ -211,7 +217,7 @@ def _apply_excel_styles(ws, num_cols: int, num_rows: int):
         cell.alignment = header_align
 
     # 列宽自适应（根据内容长度估算）
-    col_widths = [15, 20, 10, 12, 20, 15, 25, 8, 15, 15, 8, 15, 15, 25]
+    col_widths = [15, 20, 10, 12, 20, 25, 15, 8, 8, 8, 8, 15, 15, 8, 8, 15, 15, 15, 25]
     for col_idx, width in enumerate(col_widths, start=1):
         if col_idx <= num_cols:
             ws.column_dimensions[get_column_letter(col_idx)].width = width

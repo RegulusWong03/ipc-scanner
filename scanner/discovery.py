@@ -72,23 +72,27 @@ class DeviceDiscoveryThread(QThread):
                 logger.info("Phase 3: 补充 MAC 地址...")
                 self._resolve_missing_macs(devices_by_mac)
 
-            # === Phase 4: ONVIF 详细信息（可选） ===
+            # === Phase 4: HTTP 探测（获取页面标题/Server 头） ===
+            if self._is_running:
+                logger.info("Phase 4: HTTP 探测...")
+                self._run_http_probe(devices_by_mac)
+
+            # === Phase 5: ONVIF 详细信息（可选） ===
             if self._is_running and self.enable_onvif_detail:
-                logger.info("Phase 4: ONVIF 详细信息获取...")
+                logger.info("Phase 5: ONVIF 详细信息获取...")
                 self._run_onvif_detail(devices_by_mac)
 
         except Exception as e:
             logger.error("扫描出错: %s", e)
             self.scan_error.emit(str(e))
 
-        # 转换为 Device 对象并发出
+        # 转换为 Device 对象列表（device_found 已在广播阶段发出，不再重复）
         result = []
         for mac, info in devices_by_mac.items():
             if not mac or mac == "00:00:00:00:00:00":
                 continue
             device = self._build_device(info)
             result.append(device)
-            self.device_found.emit(info)
 
         self.scan_finished.emit(result)
 
@@ -166,13 +170,17 @@ class DeviceDiscoveryThread(QThread):
                 # 补充端口信息
                 devices_by_mac[mac]["open_ports"] = r["open_ports"]
             else:
+                open_ports = r["open_ports"]
                 devices_by_mac[mac] = {
                     "ip": ip,
                     "mac": mac,
                     "brand": r.get("brand", ""),
                     "device_type": r.get("device_type", ""),
-                    "open_ports": r["open_ports"],
-                    "http_port": _get_http_port(r["open_ports"]),
+                    "open_ports": open_ports,
+                    "http_port": _get_http_port(open_ports),
+                    "rtsp_port": _get_port(open_ports, 554),
+                    "device_port": _get_port(open_ports, 8000),
+                    "tcp_port": _get_port(open_ports, 37777),
                 }
 
     def _resolve_missing_macs(self, devices_by_mac: dict):
@@ -206,6 +214,26 @@ class DeviceDiscoveryThread(QThread):
             if dt:
                 info["onvif_available"] = True
                 info["system_time"] = dt
+                # 通过设备时间与当前时间差计算运行时间
+                try:
+                    from datetime import timezone
+                    now = datetime.now(timezone.utc)
+                    device_time = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+                    delta = now - device_time
+                    if delta.total_seconds() > 0:
+                        days = delta.days
+                        hours, remainder = divmod(delta.seconds, 3600)
+                        minutes, _ = divmod(remainder, 60)
+                        parts = []
+                        if days > 0:
+                            parts.append(f"{days}天")
+                        if hours > 0:
+                            parts.append(f"{hours}小时")
+                        if minutes > 0:
+                            parts.append(f"{minutes}分钟")
+                        info["uptime"] = " ".join(parts) if parts else "< 1分钟"
+                except Exception:
+                    pass
 
             # 尝试用默认账密获取详细信息
             for user, pwd in [("admin", "admin"), ("admin", "12345"), ("admin", "")]:
@@ -231,6 +259,55 @@ class DeviceDiscoveryThread(QThread):
                 except Exception:
                     continue
 
+    def _run_http_probe(self, devices_by_mac: dict):
+        """对开放 HTTP 端口的设备尝试获取页面标题和 Server 头"""
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            futures = {}
+            for mac, info in devices_by_mac.items():
+                if not self._is_running:
+                    break
+                # 已有 device_name 的跳过
+                if info.get("device_name"):
+                    continue
+                ip = info.get("ip", "")
+                http_port = info.get("http_port", 0) or _get_http_port(
+                    info.get("open_ports", []))
+                if http_port:
+                    futures[pool.submit(self._http_probe, ip, http_port)] = mac
+
+            for future in as_completed(futures):
+                mac = futures[future]
+                try:
+                    result = future.result()
+                    if result:
+                        devices_by_mac[mac].update(result)
+                except Exception:
+                    pass
+
+    def _http_probe(self, ip: str, port: int) -> dict:
+        """尝试从 HTTP 页面获取设备名称和 Server 信息"""
+        import urllib.request
+        import re
+        result = {}
+        url = f"http://{ip}:{port}/"
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                # 提取 Server 头
+                server = resp.getheader("Server", "")
+                if server:
+                    result["mac_vendor"] = server
+                # 读取 HTML 并提取 title
+                html = resp.read(4096).decode("utf-8", errors="ignore")
+                title_match = re.search(
+                    r"<title>(.*?)</title>", html, re.IGNORECASE)
+                if title_match:
+                    result["device_name"] = title_match.group(1).strip()
+        except Exception:
+            pass
+        return result
+
     def _build_device(self, info: dict) -> Device:
         """将扫描结果字典转为 Device 对象"""
         device_type_str = info.get("device_type", "UNKNOWN")
@@ -255,6 +332,15 @@ class DeviceDiscoveryThread(QThread):
             channels=channels,
             status=DeviceStatus.ONLINE,
             dhcp=info.get("dhcp", False),
+            http_port=info.get("http_port", 0),
+            rtsp_port=info.get("rtsp_port", 0),
+            device_port=info.get("device_port", 0),
+            tcp_port=info.get("tcp_port", 0),
+            analog_channels=info.get("analog_channels", 0),
+            factory_default=info.get("factory_default", False),
+            activated=info.get("activated", True),
+            device_name=info.get("device_name", ""),
+            mac_vendor=info.get("mac_vendor", ""),
             first_seen=datetime.now(),
             last_seen=datetime.now(),
         )
@@ -266,3 +352,11 @@ def _get_http_port(open_ports: list[dict]) -> int:
         if p["port"] in (80, 8080, 443):
             return p["port"]
     return 80
+
+
+def _get_port(open_ports: list[dict], target_port: int) -> int:
+    """从开放端口列表中查找指定端口是否开放"""
+    for p in open_ports:
+        if p["port"] == target_port:
+            return target_port
+    return 0
