@@ -113,6 +113,7 @@ def build(use_spec=True, onefile=False):
                 "--icon", str(BASE_DIR / "assets" / "icon.ico"),
                 "--version-file", str(BASE_DIR / "version_info.txt"),
             ])
+        cmd.append(str(BASE_DIR / "main.py"))
     else:
         # 目录模式（默认）
         cmd = [
@@ -121,6 +122,7 @@ def build(use_spec=True, onefile=False):
             "--windowed",
             "--name", "IPCScanner",
             "--add-data", f"{BASE_DIR / '_version.py'}{os.pathsep}.",
+            str(BASE_DIR / "main.py"),
         ]
 
     print(f"Running: {' '.join(cmd)}")
