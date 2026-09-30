@@ -107,12 +107,14 @@ def build(use_spec=True, onefile=False):
             "--hidden-import", "PyQt6.QtCore",
             "--hidden-import", "PyQt6.QtGui",
         ]
-        # Windows 额外参数
+        # Windows 额外参数（需要文件存在才启用）
         if system == "windows":
-            cmd.extend([
-                "--icon", str(BASE_DIR / "assets" / "icon.ico"),
-                "--version-file", str(BASE_DIR / "version_info.txt"),
-            ])
+            icon_path = BASE_DIR / "assets" / "icon.ico"
+            version_path = BASE_DIR / "version_info.txt"
+            if icon_path.exists():
+                cmd.extend(["--icon", str(icon_path)])
+            if version_path.exists():
+                cmd.extend(["--version-file", str(version_path)])
         cmd.append(str(BASE_DIR / "main.py"))
     else:
         # 目录模式（默认）
